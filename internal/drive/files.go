@@ -263,10 +263,14 @@ func (c *Client) Mkdir(ctx context.Context, parentPath, name string) (*File, err
 	}
 	var out struct {
 		basicResp
-		CID json.RawMessage `json:"cid"`
+		CID    json.RawMessage `json:"cid"`
+		FileID json.RawMessage `json:"file_id"`
 	}
 	_ = json.Unmarshal(b, &out)
 	id := rawString(out.CID)
+	if id == "" {
+		id = rawString(out.FileID)
+	}
 	p := joinPath(parentPath, name)
 	if id != "" {
 		c.rememberCID(p, id)

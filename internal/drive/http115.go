@@ -17,11 +17,11 @@ const (
 	// NAS 出口：https://webapi.115.com 与 lixian.115.com 会被 WAF 直接 405。
 	// 列表走 natsort（字段与网页一致），其余走 proapi android。
 	apiFiles       = "https://aps.115.com/natsort/files.php"
-	apiDirAdd      = "https://proapi.115.com/android/files/add"
+	apiDirAdd      = "http://web.api.115.com/files/add"
 	apiDirGetID    = "https://proapi.115.com/android/files/getid"
 	apiFileMove    = "https://proapi.115.com/android/files/move"
 	apiFileRename  = "https://proapi.115.com/android/files/batch_rename"
-	apiFileDelete  = "https://proapi.115.com/android/rb/delete"
+	apiFileDelete  = "http://web.api.115.com/rb/delete"
 	apiFileSearch  = "https://proapi.115.com/android/files/search"
 	apiFileStat    = "https://proapi.115.com/android/2.0/category/get"
 	apiRecycleList = "https://proapi.115.com/android/rb"
@@ -52,7 +52,6 @@ func rewrite115Host(rawURL string) string {
 		{"https://lixian.115.com/lixian/", "https://115.com/web/lixian/"},
 		{"http://lixian.115.com/lixian/", "https://115.com/web/lixian/"},
 		{"https://webapi.115.com", "https://proapi.115.com/android"},
-		{"http://web.api.115.com", "https://proapi.115.com/android"},
 	}
 	out := rawURL
 	for _, p := range repls {

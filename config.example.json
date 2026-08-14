@@ -1,0 +1,12 @@
+{
+  "listen": ":8080",
+  "base_dir": "6v下载",
+  "max_pages": 8,
+  "cookie": "",
+  "access_password": "",
+  "token_file": "token.json",
+  "site_base": "https://www.6v520.com",
+  "tmdb_api_key": "",
+  "tmdb_proxy": "",
+  "tmdb_language": "zh-CN"
+}

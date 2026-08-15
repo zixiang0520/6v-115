@@ -31,8 +31,10 @@ func isTVCategory(cat string) bool { return tvCategories[cat] }
 
 func sanitize(name string) string {
 	r := strings.NewReplacer(
-		"/", "_", "\\", "_", ":", "_", "*", "_",
-		"?", "_", "\"", "_", "<", "_", ">", "_", "|", "_",
+		"/", "_", "\\", "_", ":", "_", "：", "_",
+		"*", "_", "＊", "_", "?", "_", "？", "_",
+		"\"", "_", "＂", "_", "<", "_", "＜", "_",
+		">", "_", "＞", "_", "|", "_", "｜", "_",
 	)
 	s := strings.TrimSpace(r.Replace(name))
 	if s == "" {

@@ -1025,7 +1025,7 @@
     if (!items.length) { box.innerHTML = '<div class="empty"><div class="ico">📂</div>空文件夹</div>'; return; }
     box.innerHTML = items.map(f => {
       const icon = f.dir ? '📁' : iconForFile(f.name);
-      const meta = f.dir ? `${f.dirs} 文件夹 · ${f.files} 文件` : formatSize(f.size);
+      const meta = f.dir ? `${f.dirs ?? f.direcotries ?? 0} 文件夹 · ${f.files ?? 0} 文件` : formatSize(f.size);
       const date = f.update_ts ? new Date(f.update_ts * 1000).toLocaleDateString('zh-CN') : '';
       const checked = state.fileSel.has(f.identity) ? 'checked' : '';
       return `<div class="fitem ${f.dir ? 'is-dir drop-target' : ''}" draggable="true" data-id="${esc(f.identity)}" data-name="${esc(f.name)}" data-path="${esc(f.path)}" data-dir="${f.dir}">

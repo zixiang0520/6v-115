@@ -451,7 +451,7 @@ func (s *Server) filesList(w http.ResponseWriter, r *http.Request) {
 			Size:     f.Size,
 			UpdateTs: f.UpdateTs,
 			Files:    f.Files,
-			Dirs:     f.Direcotries,
+			Dirs:     f.Dirs,
 		})
 	}
 	writeJSON(w, http.StatusOK, items)

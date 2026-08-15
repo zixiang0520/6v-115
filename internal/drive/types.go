@@ -9,6 +9,7 @@ type File struct {
 	Size        int64  `json:"size"`
 	UpdateTs    int64  `json:"update_ts"`
 	Files       int64  `json:"files"`
+	Dirs        int64  `json:"dirs"`
 	Direcotries int64  `json:"direcotries"` // 历史字段名（SDK 拼写），前端未强依赖
 }
 

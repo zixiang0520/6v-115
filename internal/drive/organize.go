@@ -132,8 +132,18 @@ func (c *Client) OrganizeTask(ctx context.Context, savePath string) (*OrganizeRe
 		}
 	}
 
+	// 电影合集（钢铁侠1/2/3 打在一个包里）：按单部片名建目录，不要编成 标题-2 / 1 / 2 / 3
+	if !res.IsTV && shouldSplitMovieCollection(videos, res.TitleDir) {
+		if err := c.splitMovieCollection(ctx, res, videos); err != nil {
+			log.Printf("OrganizeTask: split collection failed: %v", err)
+		}
+		log.Printf("OrganizeTask: done split-collection deleted=%d renamed=%d skipped=%d", len(res.Deleted), len(res.Renamed), len(res.Skipped))
+		c.markOrganized(savePath)
+		return res, nil
+	}
+
 	// 重命名视频文件
-	// 电影：标题 (年份).ext （多视频加序号 -2/-3）
+	// 电影：标题 (年份).ext （同一部多盘加序号 -2/-3）
 	// 剧集：纯标题S01E05.ext（纯标题 = 去掉「 (年份)」后的标题目录名）
 	movieIdx := 0
 	pureTitle := stripYear(res.TitleDir) // 剧集用的纯标题
@@ -311,4 +321,116 @@ func parseSeasonFromName(name string) int {
 // 如「灵魂伴侣 (2026)」→「灵魂伴侣」；无年份后缀则原样返回。
 func stripYear(titleDir string) string {
 	return strings.TrimSpace(yearSuffixRe.ReplaceAllString(titleDir, ""))
+}
+
+func shouldSplitMovieCollection(videos []*File, titleDir string) bool {
+	if len(videos) < 2 {
+		return false
+	}
+	seen := map[string]struct{}{}
+	for _, v := range videos {
+		if splitDiscRe.MatchString(v.Name) && parsePartNumber(stripReleaseTags(stripExtName(v.Name))) == 0 {
+			return false
+		}
+		title := inferMovieTitle(v.Name, v.Path, titleDir)
+		if title == "" {
+			continue
+		}
+		seen[title] = struct{}{}
+	}
+	if len(seen) > 1 {
+		return true
+	}
+	return looksLikeCollectionTitle(titleDir) && len(videos) > 1
+}
+
+func (c *Client) splitMovieCollection(ctx context.Context, res *OrganizeResult, videos []*File) error {
+	s := c.snap()
+	parts := strings.Split(strings.TrimPrefix(strings.TrimRight(res.SavePath, "/"), "/"), "/")
+	if len(parts) < 2 {
+		return fmt.Errorf("savePath 太浅，无法拆合集: %s", res.SavePath)
+	}
+	catPath := "/" + parts[0] + "/" + parts[1]
+	used := map[string]int{}
+
+	for _, v := range videos {
+		inferred := inferMovieTitle(v.Name, v.Path, res.TitleDir)
+		if inferred == "" {
+			res.Skipped = append(res.Skipped, v.Name)
+			continue
+		}
+		folder := sanitize(normalizeFolderName(ctx, s.tmdb, inferred, res.Category))
+		if folder == "" || folder == "未命名" {
+			folder = sanitize(inferred)
+		}
+		n := used[folder] + 1
+		used[folder] = n
+		ext := path.Ext(v.Name)
+		newName := folder + ext
+		if n > 1 {
+			newName = fmt.Sprintf("%s-%d%s", folder, n, ext)
+		}
+		dest := joinPath(catPath, folder)
+		if _, err := ensureDir(ctx, c, catPath, folder); err != nil {
+			log.Printf("OrganizeTask: mkdir %q failed: %v", dest, err)
+			res.Skipped = append(res.Skipped, v.Name+" (建目录失败)")
+			continue
+		}
+		// 先移动再改名，避免改名后路径对不上，也避开目录名里的特殊字符
+		if path.Dir(v.Path) != strings.TrimRight(dest, "/") {
+			if err := c.Move(ctx, []string{v.Identity}, dest); err != nil {
+				log.Printf("OrganizeTask: move %q -> %q failed: %v", v.Name, dest, err)
+				res.Skipped = append(res.Skipped, v.Name+" (移动失败)")
+				continue
+			}
+			log.Printf("OrganizeTask: moved %q -> %q", v.Name, dest)
+		}
+		if newName != v.Name {
+			if err := c.Rename(ctx, v.Identity, newName); err != nil {
+				log.Printf("OrganizeTask: rename %q -> %q failed: %v", v.Name, newName, err)
+				res.Skipped = append(res.Skipped, v.Name+" (重命名失败)")
+				continue
+			}
+			log.Printf("OrganizeTask: rename %q -> %q", v.Name, newName)
+			res.Renamed = append(res.Renamed, RenameRecord{Old: v.Name, New: newName})
+		}
+		c.markOrganized(dest)
+	}
+
+	// 原合集目录若已空，清掉残留子目录
+	topFiles, err := c.ListFiles(ctx, res.SavePath)
+	if err != nil {
+		return nil
+	}
+	var dirIDs []string
+	empty := true
+	for _, f := range topFiles {
+		if !f.Dir {
+			empty = false
+			continue
+		}
+		subs, subErr := c.listAllFilesRecursive(ctx, f.Path)
+		if subErr != nil || len(subs) > 0 {
+			empty = false
+			continue
+		}
+		dirIDs = append(dirIDs, f.Identity)
+	}
+	if len(dirIDs) > 0 {
+		_ = c.DeleteFiles(ctx, dirIDs)
+	}
+	if empty && len(parts) >= 3 {
+		if left, e2 := c.ListFiles(ctx, res.SavePath); e2 == nil && len(left) == 0 {
+			if files, e3 := c.ListFiles(ctx, catPath); e3 == nil {
+				for _, f := range files {
+					if f.Dir && f.Name == parts[2] && f.Identity != "" {
+						_ = c.DeleteFiles(ctx, []string{f.Identity})
+						log.Printf("OrganizeTask: removed empty collection dir %q", res.SavePath)
+						break
+					}
+				}
+			}
+		}
+	}
+	return nil
 }

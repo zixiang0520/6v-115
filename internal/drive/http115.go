@@ -19,11 +19,16 @@ const (
 	apiFiles       = "https://aps.115.com/natsort/files.php"
 	apiDirAdd      = "http://web.api.115.com/files/add"
 	apiDirGetID    = "https://proapi.115.com/android/files/getid"
-	apiFileMove    = "https://proapi.115.com/android/files/move"
+	apiFileMove    = "http://web.api.115.com/files/move"
+	apiFileMoveAlt = "https://proapi.115.com/android/files/move"
 	apiFileRename  = "https://proapi.115.com/android/files/batch_rename"
-	apiFileDelete  = "http://web.api.115.com/rb/delete"
+	apiFileDelete    = "http://web.api.115.com/rb/delete"
+	apiFileDeleteAlt = "https://proapi.115.com/android/rb/delete"
+	apiFileDeleteV2  = "https://proapi.115.com/android/2.0/rb/delete"
+	apiDirAddAlt     = "https://proapi.115.com/android/files/add"
 	apiFileSearch  = "https://proapi.115.com/android/files/search"
 	apiFileStat    = "https://proapi.115.com/android/2.0/category/get"
+	apiFileStatAlt = "http://web.api.115.com/category/get"
 	apiRecycleList = "https://proapi.115.com/android/rb"
 	apiRecycleRev  = "https://proapi.115.com/android/rb/revert"
 	apiUserNav     = "https://my.115.com/?ct=ajax&ac=nav"
@@ -70,6 +75,43 @@ func rewrite115Host(rawURL string) string {
 
 func (c *Client) do(ctx context.Context, method, rawURL string, form url.Values) ([]byte, error) {
 	return c.doOnce(ctx, method, rawURL, form, true)
+}
+
+func isRetryable115(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "http 405") || strings.Contains(s, "http 404") || strings.Contains(s, "http 403")
+}
+
+func (c *Client) doFallback(ctx context.Context, method string, urls []string, form url.Values) ([]byte, error) {
+	var last error
+	for i, u := range urls {
+		if u == "" {
+			continue
+		}
+		b, err := c.doOnce(ctx, method, u, form, false)
+		if err == nil {
+			if i > 0 {
+				log.Printf("115 fallback ok %s", u)
+			}
+			return b, nil
+		}
+		last = err
+		if i+1 < len(urls) && isRetryable115(err) {
+			log.Printf("115 %s failed: %v, try next", u, err)
+			continue
+		}
+		if i+1 < len(urls) {
+			log.Printf("115 %s failed: %v, try next", u, err)
+			continue
+		}
+	}
+	if last == nil {
+		return nil, fmt.Errorf("115 无可用接口")
+	}
+	return nil, last
 }
 
 func (c *Client) doOnce(ctx context.Context, method, rawURL string, form url.Values, allowRewrite bool) ([]byte, error) {

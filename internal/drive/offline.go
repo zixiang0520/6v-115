@@ -48,7 +48,14 @@ func (c *Client) Push(ctx context.Context, items []PushItem) (*PushResult, error
 	log.Printf("Push: start items=%d logged_in=%v baseDir=%q", len(items), c.LoggedIn(), s.baseDir)
 	for i, it := range items {
 		ri := PushResultItem{Name: it.Name, Magnet: it.Magnet, Category: it.Category}
-		titleName := normalizeFolderName(ctx, s.tmdb, it.Title, it.Category)
+		srcTitle := it.Title
+		// 电影合集页里的单部磁力（钢铁侠1/2/3）各自建目录，不要全塞进「3部全」
+		if !isTVCategory(it.Category) && magnetLooksLikeMoviePart(it.Name, it.Title) {
+			if inferred := inferMovieTitle(it.Name, "", it.Title); inferred != "" {
+				srcTitle = inferred
+			}
+		}
+		titleName := normalizeFolderName(ctx, s.tmdb, srcTitle, it.Category)
 		ri.Folder = titleName
 
 		seasonName := ""

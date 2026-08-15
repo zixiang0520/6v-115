@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -19,14 +20,16 @@ type fileListResp struct {
 }
 
 type fileInfoRaw struct {
-	FID  string
-	CID  json.RawMessage
-	PID  string
-	Name string
-	Size json.RawMessage
-	T    string
-	TP   json.RawMessage
-	FC   string
+	FID   string
+	CID   json.RawMessage
+	PID   string
+	Name  string
+	Size  json.RawMessage
+	T     string
+	TP    json.RawMessage
+	FC    string
+	Files json.RawMessage
+	Dirs  json.RawMessage
 }
 
 func (r *fileInfoRaw) UnmarshalJSON(b []byte) error {
@@ -50,6 +53,9 @@ func (r *fileInfoRaw) UnmarshalJSON(b []byte) error {
 	r.T = rawString(pick("t", "utime", "user_utime"))
 	r.TP = pick("tp", "te", "tu")
 	r.FC = rawString(pick("fc", "file_category"))
+	// natsort 列表里 ns 是文件夹名，不是数量；计数走 category/get。
+	r.Files = pick("files", "file_count", "file_cnt")
+	r.Dirs = pick("dirs", "dir_count", "folder_count")
 	return nil
 }
 
@@ -181,7 +187,12 @@ func (c *Client) ListFiles(ctx context.Context, parentPath string) ([]*File, err
 	if err != nil {
 		return nil, err
 	}
-	return c.listByCID(ctx, cid, parentPath)
+	all, err := c.listByCID(ctx, cid, parentPath)
+	if err != nil {
+		return nil, err
+	}
+	c.fillDirCounts(ctx, all)
+	return all, nil
 }
 
 func (c *Client) listByCID(ctx context.Context, cid, parentPath string) ([]*File, error) {
@@ -215,12 +226,15 @@ func (c *Client) listByCID(ctx context.Context, cid, parentPath string) ([]*File
 		}
 		for _, it := range resp.Data {
 			f := &File{
-				Identity: it.id(),
-				Name:     it.Name,
-				Path:     joinPath(parentPath, it.Name),
-				Dir:      it.isDir(),
-				Size:     rawInt64(it.Size),
-				UpdateTs: parseUpdateTs(it.T, it.TP),
+				Identity:    it.id(),
+				Name:        it.Name,
+				Path:        joinPath(parentPath, it.Name),
+				Dir:         it.isDir(),
+				Size:        rawInt64(it.Size),
+				UpdateTs:    parseUpdateTs(it.T, it.TP),
+				Files:       rawInt64(it.Files),
+				Dirs:        rawInt64(it.Dirs),
+				Direcotries: rawInt64(it.Dirs),
 			}
 			if f.Dir {
 				c.rememberCID(f.Path, f.Identity)
@@ -235,6 +249,43 @@ func (c *Client) listByCID(ctx context.Context, cid, parentPath string) ([]*File
 	return all, nil
 }
 
+// fillDirCounts 用 category/get 补目录内文件数/子目录数（natsort 列表没有这两个字段）。
+func (c *Client) fillDirCounts(ctx context.Context, files []*File) {
+	for _, f := range files {
+		if f == nil || !f.Dir || f.Identity == "" {
+			continue
+		}
+		filesN, dirsN, err := c.dirCounts(ctx, f.Identity)
+		if err != nil {
+			log.Printf("fillDirCounts: %s (%s): %v", f.Name, f.Identity, err)
+			continue
+		}
+		f.Files = filesN
+		f.Dirs = dirsN
+		f.Direcotries = dirsN
+	}
+}
+
+func (c *Client) dirCounts(ctx context.Context, cid string) (filesN, dirsN int64, err error) {
+	q := url.Values{"cid": {cid}}
+	b, err := c.doFallback(ctx, http.MethodGet, []string{
+		apiFileStat + "?" + q.Encode(),
+		apiFileStatAlt + "?" + q.Encode(),
+	}, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	var out struct {
+		basicResp
+		Count       json.RawMessage `json:"count"`
+		FolderCount json.RawMessage `json:"folder_count"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		return 0, 0, err
+	}
+	return rawInt64(out.Count), rawInt64(out.FolderCount), nil
+}
+
 // Mkdir 在 parentPath 下建目录。
 func (c *Client) Mkdir(ctx context.Context, parentPath, name string) (*File, error) {
 	pid, err := c.resolveCID(ctx, parentPath)
@@ -242,7 +293,7 @@ func (c *Client) Mkdir(ctx context.Context, parentPath, name string) (*File, err
 		return nil, fmt.Errorf("父目录 %q 不存在: %w", parentPath, err)
 	}
 	form := url.Values{"pid": {pid}, "cname": {name}}
-	b, err := c.do(ctx, http.MethodPost, apiDirAdd, form)
+	b, err := c.doFallback(ctx, http.MethodPost, []string{apiDirAdd, apiDirAddAlt}, form)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +356,7 @@ func (c *Client) Move(ctx context.Context, identities []string, destPath string)
 	for i, id := range identities {
 		form.Set(fmt.Sprintf("fid[%d]", i), id)
 	}
-	b, err := c.do(ctx, http.MethodPost, apiFileMove, form)
+	b, err := c.doFallback(ctx, http.MethodPost, []string{apiFileMove, apiFileMoveAlt}, form)
 	if err != nil {
 		return err
 	}
@@ -317,13 +368,33 @@ func (c *Client) DeleteFiles(ctx context.Context, identities []string) error {
 	if len(identities) == 0 {
 		return errEmptyIdentity
 	}
-	form := url.Values{}
+	form := url.Values{"ignore_warn": {"1"}}
 	for i, id := range identities {
 		form.Set(fmt.Sprintf("fid[%d]", i), id)
 	}
-	b, err := c.do(ctx, http.MethodPost, apiFileDelete, form)
+	urls := []string{apiFileDelete, apiFileDeleteAlt, apiFileDeleteV2}
+	b, err := c.doFallback(ctx, http.MethodPost, urls, form)
 	if err != nil {
-		return err
+		// 部分账号只认 fid= / file_id=
+		var last error
+		last = err
+		for _, key := range []string{"fid", "file_id"} {
+			one := url.Values{"ignore_warn": {"1"}}
+			for _, id := range identities {
+				one.Add(key, id)
+			}
+			bb, e2 := c.doFallback(ctx, http.MethodPost, urls, one)
+			if e2 != nil {
+				last = e2
+				continue
+			}
+			if e3 := checkState(bb); e3 != nil {
+				last = e3
+				continue
+			}
+			return nil
+		}
+		return last
 	}
 	return checkState(b)
 }
